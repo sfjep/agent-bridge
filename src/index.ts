@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -239,13 +240,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 // Run the server using stdio transport
+// Run the server using stdio transport or sync command
 async function run() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("Agent Bridge MCP server running on stdio");
+  if (process.argv.includes("sync")) {
+    const { runSync } = await import("./sync.js");
+    await runSync();
+  } else {
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error("Agent Bridge MCP server running on stdio");
+  }
 }
 
 run().catch((error) => {
-  console.error("Fatal error running server:", error);
+  console.error("Fatal error during execution:", error);
   process.exit(1);
 });

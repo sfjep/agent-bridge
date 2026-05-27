@@ -19,7 +19,7 @@ The bridge organizes context into two main scopes:
 
 ---
 
-## Installation & Build
+## Installation, Build, and CLI
 
 1.  Clone/initialize this repository on your machine.
 2.  Install dependencies:
@@ -30,6 +30,21 @@ The bridge organizes context into two main scopes:
     ```bash
     pnpm run build
     ```
+4.  Link the binary globally (optional, so you can use the `agent-bridge` command directly):
+    ```bash
+    npm link
+    ```
+
+### Zero-Token Session Sync
+
+To avoid spending LLM API tokens on updating the plan/ledger during your active coding session, **you do not need the agent to call MCP write tools while you are working**. Instead, when you switch models or hit a rate limit, simply run the sync command locally:
+
+```bash
+npx agent-bridge sync
+```
+*(or `agent-bridge sync` if linked).*
+
+This command runs **entirely locally and costs zero tokens**. It automatically parses the raw log databases that Claude Code writes to your machine under `~/.claude/projects/`, extracts the most recent plan and checklist from the transcript, and updates `.agent-bridge/plan.md` and `.agent-bridge/tasks.md`.
 
 ---
 

@@ -3,11 +3,15 @@
   "version": "1.0.0",
   "description": "Shared context, planning, and memory between AI agents via MCP",
   "main": "build/index.js",
+  "bin": {
+    "agent-bridge": "./build/index.js"
+  },
   "type": "module",
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
-    "start": "node build/index.js"
+    "start": "node build/index.js",
+    "sync": "node build/sync.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.1"
