@@ -13,6 +13,8 @@
     "start": "node build/index.js",
     "migrate:claude": "node build/index.js migrate:claude",
     "migrate:antigravity": "node build/index.js migrate:antigravity",
+    "migrate:cursor": "node build/index.js migrate:cursor",
+    "migrate:codex": "node build/index.js migrate:codex",
     "list": "node build/index.js list"
   },
   "dependencies": {

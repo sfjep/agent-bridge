@@ -49,13 +49,25 @@ npx agent-bridge migrate:antigravity
 ```
 Scans your local Antigravity brain sessions, matches logs belonging to the current directory, and exports them into `.agent-bridge/plans/antigravity-[conversationId].md`.
 
-### 3. Listing Available Sessions
+### 3. Migrating Cursor Sessions
+```bash
+npx agent-bridge migrate:cursor
+```
+Scans local Cursor, VS Code, and VSCodium workspace storage databases, locates the database corresponding to the current project, and exports active plans or checklists into `.agent-bridge/plans/cursor-[hash]-[key].md`.
+
+### 4. Migrating Codex (VS Code) Sessions
+```bash
+npx agent-bridge migrate:codex
+```
+Scans local VS Code Copilot/Codex interactive session logs, matches the current project, and exports active plans or checklists into `.agent-bridge/plans/codex-[hash]-[key].md`.
+
+### 5. Listing Available Sessions
 ```bash
 npx agent-bridge list
 ```
 Displays all migrated sessions inside `.agent-bridge/plans/` in chronological order with titles, sources, and log times.
 
-### 4. Loading a Session
+### 6. Loading a Session
 ```bash
 npx agent-bridge load <session-filename>
 ```

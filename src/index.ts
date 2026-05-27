@@ -310,6 +310,10 @@ async function run() {
     await migration.migrateClaude();
   } else if (args.includes("migrate:antigravity")) {
     await migration.migrateAntigravity();
+  } else if (args.includes("migrate:cursor")) {
+    await migration.migrateCodexOrCursor("Cursor");
+  } else if (args.includes("migrate:codex")) {
+    await migration.migrateCodexOrCursor("Codex");
   } else if (args.includes("list")) {
     const sessions = await migration.listSessions();
     if (sessions.length === 0) {
