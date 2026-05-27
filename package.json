@@ -1,5 +1,5 @@
 {
-  "name": "agent-bridge-mcp",
+  "name": "agent-bridge",
   "version": "1.0.0",
   "description": "Shared context, planning, and memory between AI agents via MCP",
   "main": "build/index.js",

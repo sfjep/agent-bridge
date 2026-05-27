@@ -11,7 +11,7 @@ import * as storage from "./storage.js";
 
 const server = new Server(
   {
-    name: "agent-bridge-mcp",
+    name: "agent-bridge",
     version: "1.0.0",
   },
   {
