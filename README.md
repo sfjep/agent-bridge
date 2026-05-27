@@ -88,3 +88,54 @@ The server exposes the following tools:
 *   **`update_plan`**: Overwrites the workspace's `plan.md`. Use this to set or update technical layouts.
 *   **`record_memory`**: Appends a bullet point to project-level or global-level memory. Use this when learning project constraints, database details, or workflow preferences.
 *   **`get_memories`**: Retrieves project/global memories matching an optional string query.
+
+---
+
+## Example Handoff Scenario (Claude Code ⇄ Cursor/Codex)
+
+Here is a step-by-step example of how this acts as a translation ledger during developer-agent context handoffs:
+
+### Step 1: Create a plan in Claude Code
+You start working on a feature with **Claude Code**:
+```bash
+claude "Create a comments database schema and write tests"
+```
+Claude connects to `agent-bridge` via MCP, notes that the session is new, and uses the `update_plan` and `update_task_ledger` tools to initialize the following files inside your project's `.agent-bridge/` folder:
+
+**`.agent-bridge/plan.md`**
+```markdown
+# Comment System Implementation
+Define comment Drizzle table, add comment retrieval services, and write Vitest unit tests.
+```
+
+**`.agent-bridge/tasks.md`**
+```markdown
+# Tasks
+- [ ] Define comment schema in `src/server/db/schema/comments.ts`
+- [ ] Create query services in `src/server/services/comments.ts`
+- [ ] Write integration test in `tests/integration/comments.test.ts`
+```
+
+### Step 2: Session Interruption (e.g. Rate Limit / Token Exhaustion)
+While implementing the Drizzle schema, Claude runs out of tokens or hits a message rate limit:
+> ⚠️ *Rate limit exceeded. Try again in 2 hours.*
+
+### Step 3: Switch to Cursor / Codex
+You open the codebase in Cursor (configured with the `agent-bridge` MCP server) and prompt the Composer/Agent:
+> "Read the active session status and finish the task."
+
+Cursor executes `get_session_status()` and gets the exact state Claude was working on:
+1.  It reads the active plan and checklist.
+2.  It notices that the Drizzle schema was just created in `comments.ts`, but the service layer and tests are still pending.
+3.  It picks up seamlessly, writes the query services and tests, and marks those tasks as completed:
+
+**Cursor updates `.agent-bridge/tasks.md`**
+```markdown
+# Tasks
+- [x] Define comment schema in `src/server/db/schema/comments.ts`
+- [x] Create query services in `src/server/services/comments.ts`
+- [x] Write integration test in `tests/integration/comments.test.ts`
+```
+
+No context is lost, and you did not have to write a long recap prompt to get Codex up to speed.
+
