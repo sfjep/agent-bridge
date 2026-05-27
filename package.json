@@ -1,27 +1,36 @@
 {
   "name": "agent-bridge",
-  "version": "1.0.0",
-  "description": "Shared context, planning, and memory between AI agents via MCP",
+  "version": "2.0.0",
+  "description": "Distill cross-agent session history (Claude Code, Antigravity, Cursor, Codex) into a portable handoff file, with zero LLM tokens",
   "main": "build/index.js",
   "bin": {
     "agent-bridge": "./build/index.js"
   },
   "type": "module",
+  "files": [
+    "build"
+  ],
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
-    "start": "node build/index.js",
-    "migrate:claude": "node build/index.js migrate:claude",
-    "migrate:antigravity": "node build/index.js migrate:antigravity",
-    "migrate:cursor": "node build/index.js migrate:cursor",
-    "migrate:codex": "node build/index.js migrate:codex",
+    "test": "vitest run",
+    "pull": "node build/index.js pull",
     "list": "node build/index.js list"
   },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.1"
-  },
+  "keywords": [
+    "ai",
+    "agents",
+    "claude-code",
+    "cursor",
+    "antigravity",
+    "context",
+    "handoff",
+    "cli"
+  ],
+  "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.11.24",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vitest": "^2.1.8"
   }
 }
