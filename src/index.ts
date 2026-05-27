@@ -8,6 +8,7 @@ import {
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
 import * as storage from "./storage.js";
+import * as migration from "./migration.js";
 
 const server = new Server(
   {
@@ -112,6 +113,37 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               description: "Optional substring filter to match memory bullet points case-insensitively.",
             },
           },
+        },
+      },
+      {
+        name: "list_migrated_sessions",
+        description: "List all migrated sessions from Claude or Antigravity available in the .agent-bridge/plans/ directory.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            projectPath: {
+              type: "string",
+              description: "Optional absolute path of the target project directory.",
+            },
+          },
+        },
+      },
+      {
+        name: "load_migrated_session",
+        description: "Load a specific migrated session markdown file from the list into the active workspace plan and checklist.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            fileName: {
+              type: "string",
+              description: "The name of the session markdown file (e.g. 'claude-12345.md' or 'antigravity-67890.md').",
+            },
+            projectPath: {
+              type: "string",
+              description: "Optional absolute path of the target project directory.",
+            },
+          },
+          required: ["fileName"],
         },
       },
     ],
@@ -220,6 +252,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      case "list_migrated_sessions": {
+        const projectPath = args?.projectPath as string | undefined;
+        const sessions = await migration.listSessions(projectPath);
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(sessions, null, 2),
+            },
+          ],
+        };
+      }
+
+      case "load_migrated_session": {
+        const fileName = args?.fileName as string;
+        const projectPath = args?.projectPath as string | undefined;
+
+        if (!fileName) {
+          throw new McpError(ErrorCode.InvalidParams, "Missing fileName parameter");
+        }
+
+        await migration.loadSession(fileName, projectPath);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Successfully loaded migrated session: ${fileName}`,
+            },
+          ],
+        };
+      }
+
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
     }
@@ -239,13 +303,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// Run the server using stdio transport
-// Run the server using stdio transport or sync command
+// Run the server using stdio transport or sync/migration commands
 async function run() {
-  if (process.argv.includes("sync")) {
-    const { runSync } = await import("./sync.js");
-    await runSync();
+  const args = process.argv;
+  if (args.includes("migrate:claude")) {
+    await migration.migrateClaude();
+  } else if (args.includes("migrate:antigravity")) {
+    await migration.migrateAntigravity();
+  } else if (args.includes("list")) {
+    const sessions = await migration.listSessions();
+    if (sessions.length === 0) {
+      console.log("No migrated sessions found in .agent-bridge/plans/");
+    } else {
+      console.log("\nAvailable Migrated Sessions:\n");
+      sessions.forEach((s, idx) => {
+        console.log(`[${idx + 1}] ${s.fileName}`);
+        console.log(`    Source:    ${s.source}`);
+        console.log(`    Title:     ${s.title}`);
+        console.log(`    Log Time:  ${s.originalTime}`);
+        console.log(`    Migrated:  ${s.migratedAt}\n`);
+      });
+    }
+  } else if (args.includes("load")) {
+    const loadIdx = args.indexOf("load");
+    const fileArg = args[loadIdx + 1];
+    if (!fileArg) {
+      console.error("Error: Please specify the session filename to load (e.g. load claude-xxxxx.md)");
+      process.exit(1);
+    }
+    await migration.loadSession(fileArg);
+    console.log(`✓ Active plan and tasks updated with ${fileArg}`);
   } else {
+    // Start MCP Server
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error("Agent Bridge MCP server running on stdio");

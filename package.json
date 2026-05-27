@@ -11,7 +11,9 @@
     "build": "tsc",
     "watch": "tsc --watch",
     "start": "node build/index.js",
-    "sync": "node build/sync.js"
+    "migrate:claude": "node build/index.js migrate:claude",
+    "migrate:antigravity": "node build/index.js migrate:antigravity",
+    "list": "node build/index.js list"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.1"
