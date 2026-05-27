@@ -1,21 +1,17 @@
-# Agent Bridge MCP Server
+# Agent Bridge
 
 **Agent Bridge** is an open-source local context plane that synchronizes implementation plans, task checklists, and developer memories across different AI coding agents (such as Claude Code, Cursor/Codex, and Antigravity).
 
-By running a shared Model Context Protocol (MCP) server, different agents can read and write to the same session state. If you run out of tokens in Claude, you can switch to Antigravity or Cursor, and they will pick up exactly where you left off.
+Instead of agents dynamically updating task states during live coding sessions—which wastes expensive LLM API tokens—**Agent Bridge** uses an offline command-line utility to explicitly migrate session states, and a local Model Context Protocol (MCP) server to serve them automatically to the next agent on startup.
 
 ---
 
 ## How It Works
 
-The bridge organizes context into two main scopes:
+The bridge separates operations into two clean workflows:
 
-1.  **Project Context (Local):** Stored inside the `.agent-bridge/` folder in your project's root:
-    *   `plan.md` - The active architectural layout or implementation plan.
-    *   `tasks.md` - The checklist of items to build, mark complete, or refine.
-    *   `memory.md` - Key project facts, design decisions, and database schemas.
-2.  **User Context (Global):** Stored inside `~/.config/agent-bridge/`:
-    *   `memory.md` - User coding style preferences, guidelines, or cross-project rules.
+1.  **The CLI (Explicit State Sync):** When you run out of tokens or decide to switch agents, you explicitly run a migration command. The CLI parses local log databases (e.g. `~/.claude/projects/` for Claude, or the Antigravity session brain), extracts plans and checklists, and saves them as distinct session files in `.agent-bridge/plans/`.
+2.  **The MCP Server (Automatic State Load):** When you boot Cursor, Codex, or Antigravity, they connect to the MCP server. The server exposes tools to list available migrated sessions and load the chosen session's plan and checklist straight into the agent's context.
 
 ---
 
@@ -35,26 +31,44 @@ The bridge organizes context into two main scopes:
     npm link
     ```
 
-### Zero-Token Session Sync
+---
 
-To avoid spending LLM API tokens on updating the plan/ledger during your active coding session, **you do not need the agent to call MCP write tools while you are working**. Instead, when you switch models or hit a rate limit, simply run the sync command locally:
+## CLI Command Guide
 
+Run these commands in your project's root directory:
+
+### 1. Migrating Claude Code Sessions
 ```bash
-npx agent-bridge sync
+npx agent-bridge migrate:claude
 ```
-*(or `agent-bridge sync` if linked).*
+Parses your local Claude session logs for this project (under `~/.claude/projects/`) and exports plans/checklists into `.agent-bridge/plans/claude-[sessionId].md`.
 
-This command runs **entirely locally and costs zero tokens**. It automatically parses the raw log databases that Claude Code writes to your machine under `~/.claude/projects/`, extracts the most recent plan and checklist from the transcript, and updates `.agent-bridge/plan.md` and `.agent-bridge/tasks.md`.
+### 2. Migrating Antigravity Sessions
+```bash
+npx agent-bridge migrate:antigravity
+```
+Scans your local Antigravity brain sessions, matches logs belonging to the current directory, and exports them into `.agent-bridge/plans/antigravity-[conversationId].md`.
+
+### 3. Listing Available Sessions
+```bash
+npx agent-bridge list
+```
+Displays all migrated sessions inside `.agent-bridge/plans/` in chronological order with titles, sources, and log times.
+
+### 4. Loading a Session
+```bash
+npx agent-bridge load <session-filename>
+```
+Loads the specified markdown session (e.g. `claude-3bf3112d.md`) as the active plan and checklist in `.agent-bridge/plan.md` and `.agent-bridge/tasks.md`.
 
 ---
 
 ## Configuring with Agents
 
-To connect your coding agents to this shared brain, register it in their respective configuration interfaces.
+Register `agent-bridge` in your agents to allow them to query and select migrated sessions.
 
 ### 1. Claude Code
-Add the MCP server configuration to your global Claude settings file (`~/.claude.json`):
-
+Add the MCP server to your global settings (`~/.claude.json`):
 ```json
 {
   "mcpServers": {
@@ -65,8 +79,6 @@ Add the MCP server configuration to your global Claude settings file (`~/.claude
   }
 }
 ```
-
-*Tip:* You can instruct Claude in your project's `CLAUDE.md` or user system prompt to always call `get_session_status` at startup to fetch the shared state.
 
 ### 2. Cursor / Codex
 1.  Open Cursor Settings (`Ctrl+Shift+J` or Command Palette -> Cursor Settings).
@@ -76,81 +88,18 @@ Add the MCP server configuration to your global Claude settings file (`~/.claude
     *   **Name:** `agent-bridge`
     *   **Type:** `command`
     *   **Command:** `node /home/sfj/code/agent-bridge/build/index.js`
-5.  Click **Save**. Cursor's composer/agent will now have access to the status and memory tools.
-
-### 3. Antigravity
-Configure the server command in your Antigravity MCP settings:
-
-```json
-{
-  "mcpServers": {
-    "agent-bridge": {
-      "command": "node",
-      "args": ["/home/sfj/code/agent-bridge/build/index.js"]
-    }
-  }
-}
-```
+5.  Click **Save**.
 
 ---
 
 ## Exposed MCP Tools
 
-The server exposes the following tools:
+When connected as an MCP server, the following tools are available to the active agent:
 
-*   **`get_session_status`**: Reads the active `plan.md`, `tasks.md`, and project/global memories. Use this on startup to understand the current task state.
-*   **`update_task_ledger`**: Overwrites the workspace's `tasks.md` todo list. Use this to check off items or add subtasks.
-*   **`update_plan`**: Overwrites the workspace's `plan.md`. Use this to set or update technical layouts.
-*   **`record_memory`**: Appends a bullet point to project-level or global-level memory. Use this when learning project constraints, database details, or workflow preferences.
-*   **`get_memories`**: Retrieves project/global memories matching an optional string query.
-
----
-
-## Example Handoff Scenario (Claude Code ⇄ Cursor/Codex)
-
-Here is a step-by-step example of how this acts as a translation ledger during developer-agent context handoffs:
-
-### Step 1: Create a plan in Claude Code
-You start working on a feature with **Claude Code**:
-```bash
-claude "Create a comments database schema and write tests"
-```
-Claude connects to `agent-bridge` via MCP, notes that the session is new, and uses the `update_plan` and `update_task_ledger` tools to initialize the following files inside your project's `.agent-bridge/` folder:
-
-**`.agent-bridge/plan.md`**
-```markdown
-# Comment System Implementation
-Define comment Drizzle table, add comment retrieval services, and write Vitest unit tests.
-```
-
-**`.agent-bridge/tasks.md`**
-```markdown
-# Tasks
-- [ ] Define comment schema in `src/server/db/schema/comments.ts`
-- [ ] Create query services in `src/server/services/comments.ts`
-- [ ] Write integration test in `tests/integration/comments.test.ts`
-```
-
-### Step 2: Session Interruption (e.g. Rate Limit / Token Exhaustion)
-While implementing the Drizzle schema, Claude runs out of tokens or hits a message rate limit:
-> ⚠️ *Rate limit exceeded. Try again in 2 hours.*
-
-### Step 3: Switch to Cursor / Codex
-You open the codebase in Cursor (configured with the `agent-bridge` MCP server) and prompt the Composer/Agent:
-> "Read the active session status and finish the task."
-
-Cursor executes `get_session_status()` and gets the exact state Claude was working on:
-1.  It reads the active plan and checklist.
-2.  It notices that the Drizzle schema was just created in `comments.ts`, but the service layer and tests are still pending.
-3.  It picks up seamlessly, writes the query services and tests, and marks those tasks as completed:
-
-**Cursor updates `.agent-bridge/tasks.md`**
-```markdown
-# Tasks
-- [x] Define comment schema in `src/server/db/schema/comments.ts`
-- [x] Create query services in `src/server/services/comments.ts`
-- [x] Write integration test in `tests/integration/comments.test.ts`
-```
-
-No context is lost, and you did not have to write a long recap prompt to get Codex up to speed.
-
+*   **`get_session_status`**: Reads the active `.agent-bridge/plan.md` and `.agent-bridge/tasks.md` into the agent's context.
+*   **`list_migrated_sessions`**: Lists all session files available inside `.agent-bridge/plans/`.
+*   **`load_migrated_session`**: Takes a `fileName` parameter and sets it as the active plan/tasks.
+*   **`update_task_ledger`**: Overwrites the active tasks list.
+*   **`update_plan`**: Overwrites the active plan.
+*   **`record_memory`**: Appends bullet points to project or global memory.
+*   **`get_memories`**: Retrieves matching project/global memories.
