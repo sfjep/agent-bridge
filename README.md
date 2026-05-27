@@ -1,117 +1,102 @@
 # Agent Bridge
 
-**Agent Bridge** is an open-source local context plane that synchronizes implementation plans, task checklists, and developer memories across different AI coding agents (such as Claude Code, Cursor/Codex, and Antigravity).
+Switch between AI coding agents without losing your place. Agent Bridge reads
+the session logs that Claude Code, Antigravity, Cursor, and Codex already write
+to your disk, distills the current plan and task checklist for a project, and
+writes them to one portable file: `.agent-bridge/CONTEXT.md`. The next agent
+reads that file and picks up where the last one stopped.
 
-Instead of agents dynamically updating task states during live coding sessions—which wastes expensive LLM API tokens—**Agent Bridge** uses an offline command-line utility to explicitly migrate session states, and a local Model Context Protocol (MCP) server to serve them automatically to the next agent on startup.
+One command, no daemon, no API keys, no LLM calls.
 
----
+## The token story (read this, it's the whole point)
 
-## How It Works
+Agent Bridge does its extraction in plain Node, never an LLM. Asking an agent to
+"read all my past sessions and tell me where we left off" would feed millions of
+tokens of raw session JSON into a context window. Agent Bridge parses those logs
+deterministically and emits a ~1 KB markdown snapshot for **zero LLM tokens**.
 
-The bridge separates operations into two clean workflows:
+What it does *not* claim: that reading the result is free. Any agent that loads
+`CONTEXT.md` pays tokens for those bytes, the same as reading any file. The win
+is the distillation (huge logs to a tiny artifact) and the portability (one
+agent's state, readable by another), not magic from storing things locally.
 
-1.  **The CLI (Explicit State Sync):** When you run out of tokens or decide to switch agents, you explicitly run a migration command. The CLI parses local log databases (e.g. `~/.claude/projects/` for Claude, or the Antigravity session brain), extracts plans and checklists, and saves them as distinct session files in `.agent-bridge/plans/`.
-2.  **The MCP Server (Automatic State Load):** When you boot Cursor, Codex, or Antigravity, they connect to the MCP server. The server exposes tools to list available migrated sessions and load the chosen session's plan and checklist straight into the agent's context.
+## Install
 
----
-
-## Installation, Build, and CLI
-
-1.  Clone/initialize this repository on your machine.
-2.  Install dependencies:
-    ```bash
-    pnpm install
-    ```
-3.  Build the TypeScript files:
-    ```bash
-    pnpm run build
-    ```
-4.  Link the binary globally (optional, so you can use the `agent-bridge` command directly):
-    ```bash
-    npm link
-    ```
-
----
-
-## CLI Command Guide
-
-Run these commands in your project's root directory:
-
-### 1. Migrating Claude Code Sessions
 ```bash
-npx agent-bridge migrate:claude
+git clone https://github.com/sfjep/agent-bridge.git
+cd agent-bridge
+pnpm install
+pnpm run build
+npm link   # optional: puts `agent-bridge` on your PATH
 ```
-Parses your local Claude session logs for this project (under `~/.claude/projects/`) and exports plans/checklists into `.agent-bridge/plans/claude-[sessionId].md`.
 
-### 2. Migrating Antigravity Sessions
+## Usage
+
+Run in your project directory (or pass a path):
+
 ```bash
-npx agent-bridge migrate:antigravity
+agent-bridge pull          # write .agent-bridge/CONTEXT.md for this project
+agent-bridge list          # show the sessions found, write nothing
+agent-bridge pull ~/code/myapp
 ```
-Scans your local Antigravity brain sessions, matches logs belonging to the current directory, and exports them into `.agent-bridge/plans/antigravity-[conversationId].md`.
 
-### 3. Migrating Cursor Sessions
+`pull` prints which session each part came from:
+
+```
+Scanned 7 session(s) for /home/sfj/code/myapp
+  checklist: Claude Code (a1b2c3d4)
+  plan:      Antigravity (8f27f6c7)
+Wrote .agent-bridge/CONTEXT.md
+```
+
+## Having an agent consume it
+
+There is no MCP server and no auto-magic. You point the agent at the file. Add a
+line to your agent's project instructions (`CLAUDE.md`, `AGENT.md`, Cursor rules,
+etc.):
+
+> At the start of a session, read `.agent-bridge/CONTEXT.md` if it exists. It is
+> a handoff snapshot of the plan and task checklist from the previous agent.
+
+Typical flow: you hit a rate limit in Claude, run `agent-bridge pull` in your
+terminal (zero tokens), open Cursor, and it reads the snapshot on startup.
+
+## What it reads, and how it matches
+
+| Agent | Source | Project match | Checklist | Plan |
+| --- | --- | --- | --- | --- |
+| Claude Code | `~/.claude/projects/<slug>/*.jsonl` | exact (path-derived slug) | reconstructed from `TaskCreate`/`TaskUpdate` (or legacy `TodoWrite`) | last `ExitPlanMode` plan |
+| Antigravity | `~/.gemini/antigravity-*/brain/*/` | most-referenced project in transcript | `task.md` | `implementation_plan.md` |
+| Cursor / Codex | VS Code-family `workspaceStorage/*/state.vscdb` | exact (`workspace.json` folder URI) | markdown in chat state | markdown in chat state |
+
+Extraction prefers each agent's **authoritative tool state** over scraping prose.
+For Claude that means replaying the task-tool event stream to its current state
+(an `in_progress` then `completed` task shows as done) and lifting the plan the
+user actually approved, not a checklist the model happened to print mid-message.
+Where no structured state exists (Cursor/Codex), it falls back to the latest
+markdown checklist and plan-style heading found in the session.
+
+Antigravity transcripts carry no clean working-directory field and mention other
+projects' paths freely, so attribution goes to the project a session references
+*most*, not any project it merely mentions.
+
+Selection is recency-biased: across all of a project's sessions, the checklist
+and plan each come from the most recent session that actually has one.
+
+## Limitations
+
+- Cursor/Codex have no documented task schema, so they fall back to markdown
+  scraping of chat state; quality depends on what the agent wrote inline.
+- Cursor/Codex extraction shells out to `sqlite3`; install it if missing.
+- This is a snapshot tool, not a sync engine. Re-run `pull` to refresh.
+
+## Development
+
 ```bash
-npx agent-bridge migrate:cursor
-```
-Scans local Cursor, VS Code, and VSCodium workspace storage databases, locates the database corresponding to the current project, and exports active plans or checklists into `.agent-bridge/plans/cursor-[hash]-[key].md`.
-
-### 4. Migrating Codex (VS Code) Sessions
-```bash
-npx agent-bridge migrate:codex
-```
-Scans local VS Code Copilot/Codex interactive session logs, matches the current project, and exports active plans or checklists into `.agent-bridge/plans/codex-[hash]-[key].md`.
-
-### 5. Listing Available Sessions
-```bash
-npx agent-bridge list
-```
-Displays all migrated sessions inside `.agent-bridge/plans/` in chronological order with titles, sources, and log times.
-
-### 6. Loading a Session
-```bash
-npx agent-bridge load <session-filename>
-```
-Loads the specified markdown session (e.g. `claude-3bf3112d.md`) as the active plan and checklist in `.agent-bridge/plan.md` and `.agent-bridge/tasks.md`.
-
----
-
-## Configuring with Agents
-
-Register `agent-bridge` in your agents to allow them to query and select migrated sessions.
-
-### 1. Claude Code
-Add the MCP server to your global settings (`~/.claude.json`):
-```json
-{
-  "mcpServers": {
-    "agent-bridge": {
-      "command": "node",
-      "args": ["/home/sfj/code/agent-bridge/build/index.js"]
-    }
-  }
-}
+pnpm test          # vitest
+pnpm run build     # tsc -> build/
 ```
 
-### 2. Cursor / Codex
-1.  Open Cursor Settings (`Ctrl+Shift+J` or Command Palette -> Cursor Settings).
-2.  Navigate to **Features** -> **MCP**.
-3.  Click **+ Add New MCP Server**.
-4.  Enter the details:
-    *   **Name:** `agent-bridge`
-    *   **Type:** `command`
-    *   **Command:** `node /home/sfj/code/agent-bridge/build/index.js`
-5.  Click **Save**.
+## License
 
----
-
-## Exposed MCP Tools
-
-When connected as an MCP server, the following tools are available to the active agent:
-
-*   **`get_session_status`**: Reads the active `.agent-bridge/plan.md` and `.agent-bridge/tasks.md` into the agent's context.
-*   **`list_migrated_sessions`**: Lists all session files available inside `.agent-bridge/plans/`.
-*   **`load_migrated_session`**: Takes a `fileName` parameter and sets it as the active plan/tasks.
-*   **`update_task_ledger`**: Overwrites the active tasks list.
-*   **`update_plan`**: Overwrites the active plan.
-*   **`record_memory`**: Appends bullet points to project or global memory.
-*   **`get_memories`**: Retrieves matching project/global memories.
+MIT

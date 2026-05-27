@@ -1,351 +1,76 @@
 #!/usr/bin/env node
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ErrorCode,
-  ListToolsRequestSchema,
-  McpError,
-} from "@modelcontextprotocol/sdk/types.js";
-import * as storage from "./storage.js";
-import * as migration from "./migration.js";
+import * as fs from "fs/promises";
+import * as path from "path";
+import { buildContext } from "./context.js";
+import { collectSessions, resolveProjectPath } from "./sources.js";
 
-const server = new Server(
-  {
-    name: "agent-bridge",
-    version: "1.0.0",
-  },
-  {
-    capabilities: {
-      tools: {},
-    },
+const USAGE = `agent-bridge — distill cross-agent session history into a portable handoff file
+
+Usage:
+  agent-bridge pull [path]    Scan local agent logs for the project and write
+                              .agent-bridge/CONTEXT.md (zero LLM tokens)
+  agent-bridge list [path]    Show sessions found for the project (no files written)
+  agent-bridge help           Show this message
+
+Scans Claude Code, Antigravity, Cursor, and Codex logs. [path] defaults to the
+current directory.`;
+
+async function pull(projectPath: string): Promise<void> {
+  const sessions = await collectSessions(projectPath);
+  const result = buildContext(sessions, projectPath);
+
+  const outDir = path.join(projectPath, ".agent-bridge");
+  const outFile = path.join(outDir, "CONTEXT.md");
+  await fs.mkdir(outDir, { recursive: true });
+  await fs.writeFile(outFile, result.markdown, "utf-8");
+
+  console.log(`Scanned ${result.sessionCount} session(s) for ${projectPath}`);
+  console.log(
+    `  checklist: ${result.checklistFrom ? `${result.checklistFrom.source} (${result.checklistFrom.id.slice(0, 8)})` : "none found"}`
+  );
+  console.log(
+    `  plan:      ${result.planFrom ? `${result.planFrom.source} (${result.planFrom.id.slice(0, 8)})` : "none found"}`
+  );
+  console.log(`Wrote ${path.relative(process.cwd(), outFile) || outFile}`);
+}
+
+async function list(projectPath: string): Promise<void> {
+  const sessions = await collectSessions(projectPath);
+  if (sessions.length === 0) {
+    console.log(`No agent sessions found for ${projectPath}`);
+    return;
   }
-);
-
-// Register tools listing
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: "get_session_status",
-        description: "Retrieve the active session details (implementation plan, tasks checklist, project and global memories). Call this when starting a session or checking context.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            projectPath: {
-              type: "string",
-              description: "Optional absolute path of the target project directory. Defaults to the current working directory of the process.",
-            },
-          },
-        },
-      },
-      {
-        name: "update_task_ledger",
-        description: "Overwrite the active tasks list (tasks.md) for the project. Call this whenever tasks are checked off, added, or updated in detail.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            tasksMarkdown: {
-              type: "string",
-              description: "The complete, updated markdown content of the task checklist.",
-            },
-            projectPath: {
-              type: "string",
-              description: "Optional absolute path of the target project directory. Defaults to the current working directory of the process.",
-            },
-          },
-          required: ["tasksMarkdown"],
-        },
-      },
-      {
-        name: "update_plan",
-        description: "Overwrite the active implementation plan (plan.md) for the project. Call this when introducing a new plan or changing architecture/objectives.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            planMarkdown: {
-              type: "string",
-              description: "The complete, updated markdown content of the implementation plan.",
-            },
-            projectPath: {
-              type: "string",
-              description: "Optional absolute path of the target project directory. Defaults to the current working directory of the process.",
-            },
-          },
-          required: ["planMarkdown"],
-        },
-      },
-      {
-        name: "record_memory",
-        description: "Append a new memory or fact (e.g. user preferences, tech stack constraints, developer workflow notes) to either project-level memory or global memory.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            content: {
-              type: "string",
-              description: "The memory bullet point text to save.",
-            },
-            scope: {
-              type: "string",
-              enum: ["project", "global"],
-              description: "Scope of the memory. 'project' binds it to this codebase; 'global' makes it available across all your projects.",
-            },
-            projectPath: {
-              type: "string",
-              description: "Optional absolute path of the target project directory (ignored for global scope).",
-            },
-          },
-          required: ["content", "scope"],
-        },
-      },
-      {
-        name: "get_memories",
-        description: "Search/retrieve memories recorded for the project or globally.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            projectPath: {
-              type: "string",
-              description: "Optional absolute path of the target project directory.",
-            },
-            query: {
-              type: "string",
-              description: "Optional substring filter to match memory bullet points case-insensitively.",
-            },
-          },
-        },
-      },
-      {
-        name: "list_migrated_sessions",
-        description: "List all migrated sessions from Claude or Antigravity available in the .agent-bridge/plans/ directory.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            projectPath: {
-              type: "string",
-              description: "Optional absolute path of the target project directory.",
-            },
-          },
-        },
-      },
-      {
-        name: "load_migrated_session",
-        description: "Load a specific migrated session markdown file from the list into the active workspace plan and checklist.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            fileName: {
-              type: "string",
-              description: "The name of the session markdown file (e.g. 'claude-12345.md' or 'antigravity-67890.md').",
-            },
-            projectPath: {
-              type: "string",
-              description: "Optional absolute path of the target project directory.",
-            },
-          },
-          required: ["fileName"],
-        },
-      },
-    ],
-  };
-});
-
-// Handle tool execution requests
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-
-  try {
-    switch (name) {
-      case "get_session_status": {
-        const projectPath = args?.projectPath as string | undefined;
-        const status = await storage.getSessionStatus(projectPath);
-        return {
-          content: [
-            {
-              type: "text",
-              text: `## ACTIVE PLAN\n\n${status.plan}\n\n## ACTIVE TASKS\n\n${status.tasks}\n\n## PROJECT MEMORIES\n\n${status.projectMemory}\n\n## GLOBAL MEMORIES\n\n${status.globalMemory}`,
-            },
-          ],
-        };
-      }
-
-      case "update_task_ledger": {
-        const tasksMarkdown = args?.tasksMarkdown as string;
-        const projectPath = args?.projectPath as string | undefined;
-        
-        if (!tasksMarkdown) {
-          throw new McpError(ErrorCode.InvalidParams, "Missing tasksMarkdown parameter");
-        }
-
-        await storage.updateTasks(tasksMarkdown, projectPath);
-        return {
-          content: [
-            {
-              type: "text",
-              text: "Successfully updated task ledger.",
-            },
-          ],
-        };
-      }
-
-      case "update_plan": {
-        const planMarkdown = args?.planMarkdown as string;
-        const projectPath = args?.projectPath as string | undefined;
-
-        if (!planMarkdown) {
-          throw new McpError(ErrorCode.InvalidParams, "Missing planMarkdown parameter");
-        }
-
-        await storage.updatePlan(planMarkdown, projectPath);
-        return {
-          content: [
-            {
-              type: "text",
-              text: "Successfully updated active plan.",
-            },
-          ],
-        };
-      }
-
-      case "record_memory": {
-        const content = args?.content as string;
-        const scope = args?.scope as 'project' | 'global';
-        const projectPath = args?.projectPath as string | undefined;
-
-        if (!content || !scope) {
-          throw new McpError(ErrorCode.InvalidParams, "Missing content or scope parameter");
-        }
-        if (scope !== "project" && scope !== "global") {
-          throw new McpError(ErrorCode.InvalidParams, "Invalid scope. Must be 'project' or 'global'");
-        }
-
-        await storage.recordMemory(content, scope, projectPath);
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Successfully recorded ${scope} memory.`,
-            },
-          ],
-        };
-      }
-
-      case "get_memories": {
-        const projectPath = args?.projectPath as string | undefined;
-        const query = args?.query as string | undefined;
-
-        const results = await storage.getMemories(projectPath, query);
-        const projectText = results.project.length > 0 
-          ? results.project.join('\n') 
-          : "*(No matching project memories)*";
-        const globalText = results.global.length > 0 
-          ? results.global.join('\n') 
-          : "*(No matching global memories)*";
-
-        return {
-          content: [
-            {
-              type: "text",
-              text: `### Project Memories:\n${projectText}\n\n### Global Memories:\n${globalText}`,
-            },
-          ],
-        };
-      }
-
-      case "list_migrated_sessions": {
-        const projectPath = args?.projectPath as string | undefined;
-        const sessions = await migration.listSessions(projectPath);
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(sessions, null, 2),
-            },
-          ],
-        };
-      }
-
-      case "load_migrated_session": {
-        const fileName = args?.fileName as string;
-        const projectPath = args?.projectPath as string | undefined;
-
-        if (!fileName) {
-          throw new McpError(ErrorCode.InvalidParams, "Missing fileName parameter");
-        }
-
-        await migration.loadSession(fileName, projectPath);
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Successfully loaded migrated session: ${fileName}`,
-            },
-          ],
-        };
-      }
-
-      default:
-        throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
-    }
-  } catch (error: any) {
-    if (error instanceof McpError) {
-      throw error;
-    }
-    return {
-      isError: true,
-      content: [
-        {
-          type: "text",
-          text: `Error executing tool '${name}': ${error.message || error}`,
-        },
-      ],
-    };
-  }
-});
-
-// Run the server using stdio transport or sync/migration commands
-async function run() {
-  const args = process.argv;
-  if (args.includes("migrate:claude")) {
-    await migration.migrateClaude();
-  } else if (args.includes("migrate:antigravity")) {
-    await migration.migrateAntigravity();
-  } else if (args.includes("migrate:cursor")) {
-    await migration.migrateCodexOrCursor("Cursor");
-  } else if (args.includes("migrate:codex")) {
-    await migration.migrateCodexOrCursor("Codex");
-  } else if (args.includes("list")) {
-    const sessions = await migration.listSessions();
-    if (sessions.length === 0) {
-      console.log("No migrated sessions found in .agent-bridge/plans/");
-    } else {
-      console.log("\nAvailable Migrated Sessions:\n");
-      sessions.forEach((s, idx) => {
-        console.log(`[${idx + 1}] ${s.fileName}`);
-        console.log(`    Source:    ${s.source}`);
-        console.log(`    Title:     ${s.title}`);
-        console.log(`    Log Time:  ${s.originalTime}`);
-        console.log(`    Migrated:  ${s.migratedAt}\n`);
-      });
-    }
-  } else if (args.includes("load")) {
-    const loadIdx = args.indexOf("load");
-    const fileArg = args[loadIdx + 1];
-    if (!fileArg) {
-      console.error("Error: Please specify the session filename to load (e.g. load claude-xxxxx.md)");
-      process.exit(1);
-    }
-    await migration.loadSession(fileArg);
-    console.log(`✓ Active plan and tasks updated with ${fileArg}`);
-  } else {
-    // Start MCP Server
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    console.error("Agent Bridge MCP server running on stdio");
+  console.log(`Sessions for ${projectPath} (newest first):\n`);
+  for (const s of sessions) {
+    console.log(`  ${s.time.toISOString().slice(0, 16).replace("T", " ")}  ${s.source.padEnd(12)}  ${s.title}`);
   }
 }
 
-run().catch((error) => {
-  console.error("Fatal error during execution:", error);
+async function main(): Promise<void> {
+  const [command, maybePath] = process.argv.slice(2);
+  const projectPath = resolveProjectPath(maybePath);
+
+  switch (command) {
+    case "pull":
+      await pull(projectPath);
+      break;
+    case "list":
+      await list(projectPath);
+      break;
+    case "help":
+    case "--help":
+    case "-h":
+    case undefined:
+      console.log(USAGE);
+      break;
+    default:
+      console.error(`Unknown command: ${command}\n`);
+      console.log(USAGE);
+      process.exit(1);
+  }
+}
+
+main().catch((err) => {
+  console.error("agent-bridge failed:", err?.message ?? err);
   process.exit(1);
 });
